@@ -1,0 +1,14 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "harness",
+  "outputfilename": "harness",
+  "frontend:dir": "frontend",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverurl": "http://localhost:5173",
+  "author": {
+    "name": "Harness Contributors",
+    "email": ""
+  }
+}
