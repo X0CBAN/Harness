@@ -109,7 +109,16 @@ func findBrowser() (string, error) {
 	for _, p := range tried {
 		list += "\n  • " + p
 	}
-	return "", fmt.Errorf("no Chrome, Edge, or Brave found. Searched:%s\n\nInstall Chrome from https://www.google.com/chrome", list)
+	msg := "no Chrome, Chromium, Edge, or Brave found. Searched:" + list
+	switch runtime.GOOS {
+	case "linux":
+		msg += "\n\nInstall Chromium:  sudo apt install chromium  (or chromium-browser)"
+	case "darwin":
+		msg += "\n\nInstall Chrome from https://www.google.com/chrome or: brew install --cask chromium"
+	default:
+		msg += "\n\nInstall Chrome from https://www.google.com/chrome"
+	}
+	return "", fmt.Errorf("%s", msg)
 }
 
 // allBrowserCandidates returns every possible browser path for the current OS.
@@ -129,11 +138,14 @@ func allBrowserCandidates() []string {
 		return []string{
 			"google-chrome", "google-chrome-stable",
 			"chromium", "chromium-browser",
-			"brave-browser", "microsoft-edge",
+			"brave-browser", "brave",
+			"microsoft-edge", "microsoft-edge-stable",
 			"/usr/bin/google-chrome",
+			"/usr/bin/google-chrome-stable",
 			"/usr/bin/chromium",
 			"/usr/bin/chromium-browser",
 			"/snap/bin/chromium",
+			"/usr/bin/brave-browser",
 		}
 	}
 }
