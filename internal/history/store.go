@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // Entry represents a single HTTP request/response pair.
@@ -32,7 +32,7 @@ type Store struct {
 
 // New opens (or creates) the SQLite DB at the given path.
 func New(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL")
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL")
 	if err != nil {
 		return nil, err
 	}
