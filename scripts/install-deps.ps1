@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# Harness dependency installer — Windows (PowerShell 5.1+)
+# Harness dependency installer - Windows (PowerShell 5.1+)
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\install-deps.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -12,9 +12,6 @@ Write-Host ""
 Write-Host "Harness dependency installer" -ForegroundColor White
 Write-Host "================================================" -ForegroundColor DarkGray
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 function Refresh-Path {
     $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
                 [System.Environment]::GetEnvironmentVariable('PATH', 'User')
@@ -24,12 +21,9 @@ function Test-Command($cmd) {
     $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue)
 }
 
-# ---------------------------------------------------------------------------
-# winget availability
-# ---------------------------------------------------------------------------
 $useWinget = Test-Command 'winget'
 if (-not $useWinget) {
-    warn "winget not available — will attempt manual installs where needed."
+    warn "winget not available - will attempt manual installs where needed."
 }
 
 # ---------------------------------------------------------------------------
@@ -53,8 +47,11 @@ if (Test-Command 'go') {
         Remove-Item $msi -Force
     }
     Refresh-Path
-    if (Test-Command 'go') { ok "Go installed" }
-    else { warn "Go install may require a shell restart. Re-run this script after restarting." }
+    if (Test-Command 'go') {
+        ok "Go installed"
+    } else {
+        warn "Go install may require a shell restart. Re-run this script after restarting."
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -78,8 +75,11 @@ if (Test-Command 'node') {
         Remove-Item $nodeMsi -Force
     }
     Refresh-Path
-    if (Test-Command 'node') { ok "Node.js installed" }
-    else { warn "Node install may require a shell restart." }
+    if (Test-Command 'node') {
+        ok "Node.js installed"
+    } else {
+        warn "Node install may require a shell restart."
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -94,10 +94,13 @@ if (Test-Command 'wails') {
     if (Test-Command 'go') {
         go install "github.com/wailsapp/wails/v2/cmd/wails@$WAILS_VERSION"
         Refresh-Path
-        if (Test-Command 'wails') { ok "Wails installed" }
-        else { warn "Wails installed to $(go env GOPATH)\bin — add that to PATH if wails is not found." }
+        if (Test-Command 'wails') {
+            ok "Wails installed"
+        } else {
+            warn "Wails installed but not found on PATH. Add your Go bin directory to PATH and re-run."
+        }
     } else {
-        warn "Go not available — cannot install Wails. Install Go first."
+        warn "Go not available - install Go first then re-run."
     }
 }
 
@@ -111,11 +114,11 @@ if (Test-Command 'nuclei') {
     if ($ans -match '^[Yy]') {
         info "Installing Nuclei..."
         if (Test-Command 'go') {
-            go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+            go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
             Refresh-Path
             ok "Nuclei installed"
         } else {
-            warn "Go not available — download Nuclei manually from https://github.com/projectdiscovery/nuclei/releases"
+            warn "Go not available - download Nuclei manually from https://github.com/projectdiscovery/nuclei/releases"
         }
     } else {
         info "Skipping Nuclei"
@@ -137,7 +140,7 @@ if ($sqlmapFound) {
                 winget install --id SQLMap.SQLMap --silent --accept-package-agreements --accept-source-agreements
                 ok "SQLMap installed"
             } catch {
-                warn "winget install failed — trying pip..."
+                warn "winget install failed - trying pip..."
                 if (Test-Command 'pip') {
                     pip install sqlmap
                     ok "SQLMap installed via pip"
@@ -169,7 +172,10 @@ Write-Host ""
 Write-Host "Dev mode (hot reload):"
 Write-Host "  wails dev"
 Write-Host ""
-Write-Host "Note: If 'wails' or 'nuclei' are not found after install, add Go's bin"
-Write-Host "      directory to your PATH:"
-$goPath = if (Test-Command 'go') { go env GOPATH } else { "$env:USERPROFILE\go" }
-Write-Host "      $goPath\bin"
+
+$gobin = "$env:USERPROFILE\go\bin"
+if (Test-Command 'go') {
+    $gobin = "$(go env GOPATH)\bin"
+}
+Write-Host "Note: if 'wails' is not found after install, add Go's bin to PATH:"
+Write-Host "  $gobin"
