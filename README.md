@@ -1,4 +1,4 @@
-# Harness
+<h1><img src="frontend/src/assets/logo-bg-removed.png" width="56"> Harness</h1>
 
 An open-source HTTP proxy and web security testing tool. Built for testers who are tired of ZAP's UI and don't want to pay for Burp Pro. Ships as a single binary.
 
@@ -94,6 +94,8 @@ Runs your locally installed Nuclei engine against a target, with all scan traffi
 - Streaming output with severity colour coding
 - Stop at any time
 - Intercept is automatically suspended during scans so it doesn't interfere
+
+> **Windows Defender will flag Nuclei as malware.** This is a false positive — Nuclei is an open-source scanner used by the security community. Add an exclusion for the Nuclei binary in Windows Security before installing.
 
 ### SQLMap
 Launches SQLMap against a target, with all SQL test traffic visible in proxy history.

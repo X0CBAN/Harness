@@ -112,6 +112,8 @@ if (Test-Command 'nuclei') {
 } else {
     $ans = Read-Host "Install Nuclei scanner? [y/N]"
     if ($ans -match '^[Yy]') {
+        warn "Windows Defender will flag Nuclei as malware - this is a false positive."
+        warn "Add an exclusion for nuclei.exe in Windows Security before or after install."
         info "Installing Nuclei..."
         if (Test-Command 'go') {
             go install "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
