@@ -19,6 +19,10 @@ Full MITM HTTP/HTTPS interception.
 - Click any row for full request + response with Raw / Hex / Render views
 - Right-click any row → Send to Repeater / Intruder / SQLMap
 
+![Proxy demo](GIFS/proxy.gif)
+
+![History demo](GIFS/history.gif)
+
 ### Repeater
 Replay and modify individual requests.
 
@@ -27,6 +31,8 @@ Replay and modify individual requests.
 - Response panel: Raw · Hex dump · Rendered HTML · Pretty JSON
 - Grep search across response body
 - Right-click encode/decode (URL, Base64, HTML entities, hex)
+
+![Repeater demo](GIFS/repeat.gif)
 
 ### Intruder
 Parameterized fuzzer.
@@ -48,6 +54,8 @@ Parameterized fuzzer.
 - Click any row → modal with Request / Raw / Headers / Body / Hex / Render tabs
 - Session tabs — switch between multiple attack configs without losing results
 
+![Intruder demo](GIFS/intruder.gif)
+
 ### Crawler
 Active spider with a visual graph.
 
@@ -58,6 +66,8 @@ Active spider with a visual graph.
 - Wordlist fuzzing — paste paths or load a file to brute-force directories alongside the crawl
 - D3 force graph — nodes coloured by status code; 404s are dropped silently
 - Click any node → Send to Repeater
+
+![Crawler demo](GIFS/crawl.gif)
 
 ### Secrets Scanner
 Passive scanner running against proxied traffic.
@@ -97,12 +107,16 @@ Runs your locally installed Nuclei engine against a target, with all scan traffi
 
 > **Windows Defender will flag Nuclei as malware.** This is a false positive — Nuclei is an open-source scanner used by the security community. Add an exclusion for the Nuclei binary in Windows Security before installing.
 
+![Nuclei demo](GIFS/nuclei.gif)
+
 ### SQLMap
 Launches SQLMap against a target, with all SQL test traffic visible in proxy history.
 
 - Send any history entry directly to SQLMap with one click
 - Configurable technique, level, risk, DBMS, dump flags
 - Streaming output in-app
+
+![SQLMap demo](GIFS/sqlmap.gif)
 
 ### Scripts
 Runs JavaScript analysis against captured proxy history and crawler data.
