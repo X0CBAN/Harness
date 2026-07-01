@@ -2,7 +2,7 @@
 
 An open-source HTTP proxy and web security testing Framework.
 
-> **Work in progress.** Core tools are stable on my build. Some UI polish and features are still being added. Scanning is powered by Nuclei and SQLMap — both battle-tested and maintained by their own teams. Custom scanning engines are planned. 
+> **Work in progress.** Core tools are stable on my build. Some UI polish and features are still being added. Scanning is powered by Nuclei and SQLMap — both battle-tested and maintained by their own teams. Custom scanning engines are being ruminated. 
 
 ---
 
