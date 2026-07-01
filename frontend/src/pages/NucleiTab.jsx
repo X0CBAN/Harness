@@ -44,12 +44,12 @@ function parseSeverity(line) {
 }
 
 export default function NucleiTab() {
-  const { nucleiRunning, nucleiOutput, setNucleiRunning, addNucleiOutput, clearNucleiOutput } = useStore()
+  const { nucleiRunning, nucleiOutput, setNucleiRunning, addNucleiOutput, clearNucleiOutput, nucleiTarget, nucleiTags } = useStore()
 
   const [leftPx, onLeftResize] = useDragH(340, 220, 700)
   const [installed, setInstalled] = useState(null) // null = checking
-  const [target, setTarget]       = useState('')
-  const [tags, setTags]           = useState('')
+  const [target, setTarget]       = useState(nucleiTarget || '')
+  const [tags, setTags]           = useState(nucleiTags || '')
   const [severity, setSeverity]   = useState('medium,high,critical')
   const [templates, setTemplates] = useState('')
   const [useProxy, setUseProxy]   = useState(true)

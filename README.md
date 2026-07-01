@@ -1,8 +1,8 @@
 <h1><img src="frontend/src/assets/logo-bg-removed.png" width="56"> Harness</h1>
 
-An open-source HTTP proxy and web security testing tool. Built for testers who are tired of ZAP's UI and don't want to pay for Burp Pro. Ships as a single binary.
+An open-source HTTP proxy and web security testing tool. Built for testers who are tired of ZAP's UI and don't want to pay for Burp Pro.
 
-> **Work in progress.** Core tools are stable. macOS builds are untested. Some UI polish and features are still being added.
+> **Work in progress.** Core tools are stable on my build. macOS builds are not too tested. Some UI polish and features are still being added. Scanning is powered by Nuclei and SQLMap — both battle-tested and maintained by their own teams. Custom scanning engines are planned. 
 
 ---
 
@@ -136,6 +136,7 @@ No prebuilt binaries yet — build from source. The installer script handles all
 
 ```powershell
 git clone https://github.com/X0CBAN/Harness
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 cd Harness
 .\scripts\install-deps.ps1
 wails build
@@ -148,6 +149,7 @@ The script installs Go, Node.js, and Wails if they're not already present. Optio
 ```bash
 git clone https://github.com/X0CBAN/Harness
 cd Harness
+chmod +x scripts/install-deps.sh
 bash scripts/install-deps.sh
 ```
 
@@ -248,7 +250,8 @@ harness/
 ---
 
 ## Known Issues
-
+- **Linux performance on low-resource VMs** — the WebKit2GTK renderer is heavy. Expect lag in VMs with less than 2GB RAM or no GPU acceleration. Native installs are fine.
+- **Linux window quirks** — window decorations and sizing behave differently depending on your desktop environment. Known to look off on some GNOME and tiling WM setups. Works best on a standard desktop session.
 - **macOS untested** — builds should work but haven't been run on real hardware yet. [Open an issue](https://github.com/X0CBAN/Harness/issues) if something breaks.
 - **Secrets scanner only peeks 32 KB** — responses larger than 32 KB will only be scanned up to that limit. Findings in the tail of a large response will be missed.
 - **Launch Browser requires Chromium** — Firefox doesn't support `--ignore-certificate-errors` via CLI flag so it can't be used with the one-click launch. Install Chromium (`sudo apt install chromium`) if the button does nothing.

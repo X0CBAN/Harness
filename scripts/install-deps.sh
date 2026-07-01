@@ -91,25 +91,43 @@ need_node() {
 # ---------------------------------------------------------------------------
 # Linux GTK/WebKit (required by Wails)
 # ---------------------------------------------------------------------------
+WEBKIT_TAG=""
 need_linux_deps() {
     [ "$OS" != "Linux" ] && return 0
     info "Installing Wails Linux dependencies (gtk3, webkit2gtk)..."
     if command -v apt-get &>/dev/null; then
         sudo apt-get update -qq
-        sudo apt-get install -y \
-            libgtk-3-dev libwebkit2gtk-4.0-dev \
-            gcc pkg-config libayatana-appindicator3-dev \
-            build-essential
+        sudo apt-get install -y libgtk-3-dev gcc pkg-config build-essential
+        # Try webkit2gtk 4.1 first (Ubuntu 23+, Debian 12+, Parrot), fall back to 4.0
+        if sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null; then
+            WEBKIT_TAG="-tags webkit2_41"
+            ok "webkit2gtk 4.1 installed"
+        elif sudo apt-get install -y libwebkit2gtk-4.0-dev 2>/dev/null; then
+            ok "webkit2gtk 4.0 installed"
+        else
+            warn "Could not install webkit2gtk - install libwebkit2gtk-4.0-dev or libwebkit2gtk-4.1-dev manually"
+        fi
     elif command -v dnf &>/dev/null; then
         sudo dnf install -y \
-            gtk3-devel webkit2gtk4.0-devel \
+            gtk3-devel webkit2gtk4.1-devel \
             gcc pkg-config
+        WEBKIT_TAG="-tags webkit2_41"
     elif command -v pacman &>/dev/null; then
-        sudo pacman -Sy --noconfirm \
-            gtk3 webkit2gtk base-devel pkg-config
+        # webkit2gtk-4.1 is the new name on Arch 2024+; fall back to webkit2gtk
+        if sudo pacman -Sy --noconfirm gtk3 webkit2gtk-4.1 base-devel pkg-config 2>/dev/null; then
+            WEBKIT_TAG="-tags webkit2_41"
+            ok "webkit2gtk 4.1 installed"
+        else
+            sudo pacman -Sy --noconfirm gtk3 webkit2gtk base-devel pkg-config
+        fi
     else
         warn "Could not detect package manager. Install gtk3 and webkit2gtk manually."
         return 1
+    fi
+    # Safety net: detect via pkg-config which webkit version is actually present
+    if [ -z "$WEBKIT_TAG" ] && pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
+        WEBKIT_TAG="-tags webkit2_41"
+        ok "Detected webkit2gtk 4.1 via pkg-config"
     fi
     ok "Linux deps installed"
 }
@@ -190,10 +208,10 @@ echo -e "${GREEN}${BOLD}All done!${NC}"
 echo ""
 echo "Build Harness:"
 echo "  cd $(dirname "$(realpath "$0")")/.."
-echo "  wails build"
+echo "  wails build $WEBKIT_TAG"
 echo ""
 echo "Dev mode (hot reload):"
-echo "  wails dev"
+echo "  wails dev $WEBKIT_TAG"
 echo ""
 echo "Note: If 'wails' or 'nuclei' are not found, add Go bin to your PATH:"
 echo "  export PATH=\"\$HOME/go/bin:\$PATH\""

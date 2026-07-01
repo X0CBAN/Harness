@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strings"
@@ -25,6 +26,7 @@ type Node struct {
 	FoundAt    time.Time `json:"foundAt"`
 	Title      string    `json:"title,omitempty"`
 	Forms      int       `json:"forms,omitempty"`
+	Tech       []string  `json:"tech,omitempty"`
 }
 
 const (
@@ -53,12 +55,14 @@ type Crawler struct {
 // New creates a new Crawler.
 func New(seedURL string, maxDepth int, onNode func(*Node)) *Crawler {
 	ctx, cancel := context.WithCancel(context.Background())
+	jar, _ := cookiejar.New(nil)
 	return &Crawler{
 		SeedURL:  seedURL,
 		MaxDepth: maxDepth,
 		OnNode:   onNode,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
+			Jar:     jar,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 5 {
 					return http.ErrUseLastResponse
@@ -81,26 +85,43 @@ func (c *Crawler) Start() {
 		c.crawl(c.SeedURL, nil, 0)
 	}()
 
-	// Probe extra wordlist paths against the seed host (no recursion — just the path itself)
-	if len(c.ExtraPaths) > 0 {
-		base, err := url.Parse(c.SeedURL)
-		if err == nil {
-			for _, p := range c.ExtraPaths {
-				p = strings.TrimSpace(p)
-				if p == "" || strings.HasPrefix(p, "#") {
-					continue
-				}
-				if !strings.HasPrefix(p, "/") {
-					p = "/" + p
-				}
-				target := &url.URL{Scheme: base.Scheme, Host: base.Host, Path: p}
-				full := target.String()
-				c.wg.Add(1)
-				go func(u string) {
-					defer c.wg.Done()
-					c.crawl(u, nil, c.MaxDepth) // MaxDepth prevents recursion
-				}(full)
+	// Auto-discover well-known paths on the seed host
+	base, err := url.Parse(c.SeedURL)
+	if err == nil {
+		autoDiscover := []string{
+			"/robots.txt", "/sitemap.xml", "/.well-known/security.txt",
+			"/swagger.json", "/openapi.json", "/openapi.yaml",
+			"/api-docs", "/api/docs", "/graphql", "/graphiql",
+			"/.git/HEAD", "/.env",
+		}
+		for _, p := range autoDiscover {
+			target := &url.URL{Scheme: base.Scheme, Host: base.Host, Path: p}
+			full := target.String()
+			c.wg.Add(1)
+			go func(u string) {
+				defer c.wg.Done()
+				c.crawl(u, nil, 0)
+			}(full)
+		}
+	}
+
+	// Probe extra wordlist paths, starting from depth 0 so their links get followed
+	if len(c.ExtraPaths) > 0 && err == nil {
+		for _, p := range c.ExtraPaths {
+			p = strings.TrimSpace(p)
+			if p == "" || strings.HasPrefix(p, "#") {
+				continue
 			}
+			if !strings.HasPrefix(p, "/") {
+				p = "/" + p
+			}
+			target := &url.URL{Scheme: base.Scheme, Host: base.Host, Path: p}
+			full := target.String()
+			c.wg.Add(1)
+			go func(u string) {
+				defer c.wg.Done()
+				c.crawl(u, nil, 0)
+			}(full)
 		}
 	}
 
@@ -118,6 +139,34 @@ func (c *Crawler) Stop() {
 	c.wg.Wait()
 }
 
+// canonicalURL returns a deduplicated form of a URL for the visited map.
+// Numeric/UUID query param values are replaced with {n} so that
+// /product?id=1 and /product?id=2 count as the same URL.
+func canonicalURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	if len(q) == 0 {
+		return rawURL
+	}
+	intRe := regexp.MustCompile(`^\d+$`)
+	uuidRe := regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	cq := make(url.Values)
+	for k, vs := range q {
+		for _, v := range vs {
+			if intRe.MatchString(v) || uuidRe.MatchString(v) {
+				cq.Add(k, "{n}")
+			} else {
+				cq.Add(k, v)
+			}
+		}
+	}
+	u.RawQuery = cq.Encode()
+	return u.String()
+}
+
 func (c *Crawler) crawl(rawURL string, parentID *int64, depth int) {
 	if depth > c.MaxDepth {
 		return
@@ -127,12 +176,13 @@ func (c *Crawler) crawl(rawURL string, parentID *int64, depth int) {
 	if normalized == "" {
 		return // invalid scheme or host
 	}
+	canonical := canonicalURL(normalized)
 	c.mu.Lock()
-	if c.visited[normalized] || c.total >= maxURLs {
+	if c.visited[canonical] || c.total >= maxURLs {
 		c.mu.Unlock()
 		return
 	}
-	c.visited[normalized] = true
+	c.visited[canonical] = true
 	c.total++
 	c.mu.Unlock()
 
@@ -171,9 +221,13 @@ func (c *Crawler) crawl(rawURL string, parentID *int64, depth int) {
 	ct := resp.Header.Get("Content-Type")
 	isHTML := strings.Contains(ct, "text/html")
 	isJSON := strings.Contains(ct, "application/json") || strings.Contains(ct, "text/json")
+	isXML := strings.Contains(ct, "text/xml") || strings.Contains(ct, "application/xml") || strings.Contains(ct, "application/rss") || strings.Contains(ct, "application/atom")
+	isPlain := strings.Contains(ct, "text/plain")
+	isCSS := strings.Contains(ct, "text/css")
+	isJS := strings.Contains(ct, "javascript") || strings.Contains(ct, "ecmascript")
 
 	var body []byte
-	if isHTML || isJSON {
+	if isHTML || isJSON || isXML || isPlain || isCSS || isJS {
 		body, err = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if err != nil {
 			return
@@ -189,6 +243,7 @@ func (c *Crawler) crawl(rawURL string, parentID *int64, depth int) {
 		Depth:      depth,
 		StatusCode: resp.StatusCode,
 		FoundAt:    time.Now(),
+		Tech:       detectTech(resp, body),
 	}
 
 	if isHTML && len(body) > 0 {
@@ -212,8 +267,19 @@ func (c *Crawler) crawl(rawURL string, parentID *int64, depth int) {
 	var discovered []string
 	if isHTML {
 		discovered = extractLinks(body, base)
+		for _, u := range extractGetForms(body, base) {
+			discovered = append(discovered, u)
+		}
 	} else if isJSON {
 		discovered = extractJSONLinks(body, base)
+	} else if isXML {
+		discovered = extractSitemapLinks(body, base)
+	} else if isPlain {
+		discovered = extractRobotsLinks(body, base)
+	} else if isCSS {
+		discovered = extractCSSLinks(body, base)
+	} else if isJS {
+		discovered = extractJSRoutes(body, base)
 	}
 
 	var parents []string
@@ -465,6 +531,279 @@ func inferParentPaths(rawURL string, base *url.URL) []string {
 		paths = append(paths, parent.String())
 	}
 	return paths
+}
+
+// detectTech identifies server-side technologies from response headers and body.
+func detectTech(resp *http.Response, body []byte) []string {
+	seen := make(map[string]bool)
+	var tech []string
+	add := func(t string) {
+		t = strings.TrimSpace(t)
+		if t != "" && !seen[t] {
+			seen[t] = true
+			tech = append(tech, t)
+		}
+	}
+
+	if s := resp.Header.Get("Server"); s != "" {
+		add(s)
+	}
+	if xpb := resp.Header.Get("X-Powered-By"); xpb != "" {
+		add(xpb)
+	}
+	if resp.Header.Get("X-Drupal-Cache") != "" || resp.Header.Get("X-Drupal-Dynamic-Cache") != "" {
+		add("Drupal")
+	}
+	if resp.Header.Get("X-Joomla-Token") != "" {
+		add("Joomla")
+	}
+	if resp.Header.Get("X-Generator") != "" {
+		add(resp.Header.Get("X-Generator"))
+	}
+	for _, cookie := range resp.Cookies() {
+		switch cookie.Name {
+		case "PHPSESSID":
+			add("PHP")
+		case "JSESSIONID":
+			add("Java")
+		case "ASP.NET_SessionId", "ASPSESSIONID":
+			add("ASP.NET")
+		case "laravel_session":
+			add("Laravel")
+		case "django_session":
+			add("Django")
+		}
+		if strings.HasPrefix(cookie.Name, "wp-") || strings.HasPrefix(cookie.Name, "wordpress_") {
+			add("WordPress")
+		}
+	}
+
+	if len(body) > 0 {
+		genRe := regexp.MustCompile(`(?i)<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)["']|<meta[^>]+content=["']([^"']+)["'][^>]+name=["']generator["']`)
+		if m := genRe.FindSubmatch(body); m != nil {
+			for _, sub := range m[1:] {
+				if len(sub) > 0 {
+					add(string(sub))
+					break
+				}
+			}
+		}
+	}
+
+	return tech
+}
+
+// extractRobotsLinks extracts paths from robots.txt Disallow/Allow/Sitemap directives.
+func extractRobotsLinks(body []byte, base *url.URL) []string {
+	seen := make(map[string]bool)
+	var links []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		val := strings.TrimSpace(parts[1])
+		// Strip inline comments
+		if idx := strings.Index(val, " #"); idx != -1 {
+			val = strings.TrimSpace(val[:idx])
+		}
+		if key == "sitemap" {
+			if strings.HasPrefix(val, "http") && !seen[val] {
+				seen[val] = true
+				links = append(links, val)
+			}
+			continue
+		}
+		if key != "disallow" && key != "allow" {
+			continue
+		}
+		if val == "" || strings.Contains(val, "*") {
+			continue
+		}
+		if !strings.HasPrefix(val, "/") {
+			continue
+		}
+		target := &url.URL{Scheme: base.Scheme, Host: base.Host, Path: val}
+		s := target.String()
+		if !seen[s] {
+			seen[s] = true
+			links = append(links, s)
+		}
+	}
+	return links
+}
+
+// extractSitemapLinks extracts URLs from XML sitemaps (<loc> tags).
+func extractSitemapLinks(body []byte, base *url.URL) []string {
+	locRe := regexp.MustCompile(`<loc>\s*(https?://[^<\s]+)\s*</loc>`)
+	seen := make(map[string]bool)
+	var links []string
+	for _, m := range locRe.FindAllSubmatch(body, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		href := strings.TrimSpace(string(m[1]))
+		if !seen[href] {
+			seen[href] = true
+			links = append(links, href)
+		}
+	}
+	return links
+}
+
+// extractCSSLinks finds URL references in CSS stylesheets.
+func extractCSSLinks(body []byte, base *url.URL) []string {
+	cssURLRe := regexp.MustCompile(`url\(\s*['"]?(https?://[^'")\s]+|/[^'")\s]+)['"]?\s*\)`)
+	importRe := regexp.MustCompile(`@import\s+['"]([^'"]+)['"]`)
+	seen := make(map[string]bool)
+	var links []string
+	add := func(href string) {
+		href = strings.TrimSpace(href)
+		if href == "" {
+			return
+		}
+		ref, err := url.Parse(href)
+		if err != nil {
+			return
+		}
+		resolved := base.ResolveReference(ref)
+		resolved.Fragment = ""
+		s := resolved.String()
+		if !seen[s] {
+			seen[s] = true
+			links = append(links, s)
+		}
+	}
+	for _, m := range cssURLRe.FindAllSubmatch(body, -1) {
+		if len(m) > 1 {
+			add(string(m[1]))
+		}
+	}
+	for _, m := range importRe.FindAllSubmatch(body, -1) {
+		if len(m) > 1 {
+			add(string(m[1]))
+		}
+	}
+	return links
+}
+
+// extractJSRoutes finds route paths inside JavaScript files (React, Vue, Express, etc.)
+func extractJSRoutes(body []byte, base *url.URL) []string {
+	seen := make(map[string]bool)
+	var links []string
+	add := func(href string) {
+		href = strings.TrimSpace(href)
+		if href == "" || !looksLikeWebPath(href) {
+			return
+		}
+		ref, err := url.Parse(href)
+		if err != nil {
+			return
+		}
+		resolved := base.ResolveReference(ref)
+		resolved.Fragment = ""
+		s := resolved.String()
+		if !seen[s] {
+			seen[s] = true
+			links = append(links, s)
+		}
+	}
+	// path: "/some/route" — quoted path strings
+	pathRe := regexp.MustCompile(`["` + "`" + `]((?:/[a-zA-Z0-9_\-./]+)(?:\?[^"` + "`" + `<>\s]*)?)["` + "`" + `]`)
+	for _, m := range pathRe.FindAllStringSubmatch(string(body), -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+	// fetch/axios full URLs
+	fullURLRe := regexp.MustCompile(`(?:fetch|axios\.(?:get|post|put|delete|patch))\s*\(\s*["` + "`" + `](https?://[^"` + "`" + `\s]+)`)
+	for _, m := range fullURLRe.FindAllStringSubmatch(string(body), -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+	return links
+}
+
+// extractGetForms finds HTML GET forms and constructs their submission URLs with test values.
+func extractGetForms(body []byte, base *url.URL) []string {
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var links []string
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "form" {
+			method := ""
+			action := ""
+			for _, a := range n.Attr {
+				switch strings.ToLower(a.Key) {
+				case "method":
+					method = strings.ToLower(strings.TrimSpace(a.Val))
+				case "action":
+					action = strings.TrimSpace(a.Val)
+				}
+			}
+			if method == "" || method == "get" {
+				if action == "" {
+					action = base.Path
+				}
+				params := url.Values{}
+				var collectInputs func(*html.Node)
+				collectInputs = func(c *html.Node) {
+					if c.Type == html.ElementNode {
+						switch c.Data {
+						case "input", "select", "textarea":
+							name := ""
+							typ := "text"
+							for _, a := range c.Attr {
+								switch a.Key {
+								case "name":
+									name = a.Val
+								case "type":
+									typ = strings.ToLower(a.Val)
+								}
+							}
+							if name != "" && typ != "submit" && typ != "button" && typ != "reset" && typ != "hidden" && typ != "file" {
+								params.Set(name, "test")
+							}
+						}
+					}
+					for child := c.FirstChild; child != nil; child = child.NextSibling {
+						collectInputs(child)
+					}
+				}
+				collectInputs(n)
+
+				ref, err := url.Parse(action)
+				if err == nil {
+					resolved := base.ResolveReference(ref)
+					resolved.Fragment = ""
+					if len(params) > 0 {
+						resolved.RawQuery = params.Encode()
+					}
+					s := resolved.String()
+					if !seen[s] {
+						seen[s] = true
+						links = append(links, s)
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return links
 }
 
 // extractJSONLinks finds path/URL strings inside a JSON response body.

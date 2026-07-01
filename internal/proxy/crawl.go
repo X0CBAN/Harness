@@ -27,6 +27,7 @@ func (a *App) newCrawlerWith(seedURL string, maxDepth int, extraPaths []string) 
 				"depth":      n.Depth,
 				"statusCode": n.StatusCode,
 				"foundAt":    n.FoundAt,
+				"tech":       n.Tech,
 			},
 		})
 	})

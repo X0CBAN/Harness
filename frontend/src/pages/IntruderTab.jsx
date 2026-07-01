@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
-import { Target, Play, Square, Trash2, Plus, X, Upload, Search, Copy, Check } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Target, Play, Square, Trash2, Plus, X, Upload, Search, Copy, Check, Download } from 'lucide-react'
 import { useStore } from '../stores/store'
 import { backend } from '../bridge'
 import { toHexDump, extractBody, isJsonLike, formatJson } from '../components/viewUtils'
 
-// ── Encode/Decode helpers ─────────────────────────────────────────────────────
 const encB64 = (s) => { try { return btoa(unescape(encodeURIComponent(s))) } catch { return s } }
 const decB64 = (s) => { try { return decodeURIComponent(escape(atob(s))) } catch { return s } }
 const encURL = (s) => encodeURIComponent(s)
@@ -13,7 +12,6 @@ const encHex = (s) => Array.from(new TextEncoder().encode(s)).map(b => b.toStrin
 const decHex = (s) => { try { return new TextDecoder().decode(new Uint8Array((s.match(/.{1,2}/g)||[]).map(h=>parseInt(h,16)))) } catch { return s } }
 const decHTML = (s) => { const el = document.createElement('textarea'); el.innerHTML = s; return el.value }
 
-// ── Request editor context menu ───────────────────────────────────────────────
 function useEncoderMenu(getVal, setVal) {
   const [menu, setMenu] = useState(null)
   const selRef = useRef({ start: 0, end: 0, text: '' })
@@ -71,7 +69,6 @@ function useEncoderMenu(getVal, setVal) {
   return { taRef, onContextMenu, MenuEl }
 }
 
-// ── Response popup modal ──────────────────────────────────────────────────────
 function ResponseModal({ result, onClose }) {
   const [viewTab, setViewTab] = useState('raw')
   const [search, setSearch] = useState('')
@@ -280,7 +277,6 @@ function ResponseModal({ result, onClose }) {
   )
 }
 
-// ── Misc helpers ──────────────────────────────────────────────────────────────
 function statusClass(code) {
   if (!code) return 'status-0'
   if (code < 300) return 'status-2xx'
@@ -313,6 +309,23 @@ const TRANSFORM_TYPES = [
   { value: 'suffix',        label: 'Add Suffix',    hasValue: true  },
 ]
 
+const PAYLOAD_PRESETS = [
+  { label: 'SQLi',    color: '#f87171', payloads: [`'`, `' OR '1'='1`, `' OR 1=1--`, `" OR "1"="1`, `' UNION SELECT NULL--`, `' UNION SELECT NULL,NULL--`, `' UNION SELECT NULL,NULL,NULL--`, `1' ORDER BY 1--`, `1' ORDER BY 2--`, `1 AND 1=1`, `1 AND 1=2`, `admin'--`, `') OR ('1'='1`] },
+  { label: 'XSS',     color: '#fb923c', payloads: [`<script>alert(1)</script>`, `<img src=x onerror=alert(1)>`, `"><script>alert(document.domain)</script>`, `<svg onload=alert(1)>`, `javascript:alert(1)`, `<iframe src="javascript:alert(1)">`, `'><img src=x onerror=alert(1)>`, `<body onload=alert(1)>`, `<input onfocus=alert(1) autofocus>`] },
+  { label: 'Paths',   color: '#60a5fa', payloads: [`/admin`, `/admin/`, `/administrator`, `/admin/login`, `/api`, `/api/v1`, `/api/v2`, `/backup`, `/config`, `/config.php`, `/.env`, `/.git`, `/debug`, `/test`, `/dev`, `/dashboard`, `/panel`, `/wp-admin`, `/phpmyadmin`, `/robots.txt`, `/sitemap.xml`, `/swagger.json`, `/openapi.json`] },
+  { label: 'LFI',     color: '#c084fc', payloads: [`../etc/passwd`, `../../etc/passwd`, `../../../etc/passwd`, `../../../../etc/passwd`, `....//....//etc/passwd`, `..%2F..%2Fetc%2Fpasswd`, `%2e%2e%2f%2e%2e%2fetc%2fpasswd`, `..\\..\\windows\\win.ini`] },
+  { label: 'Auth',    color: '#4ade80', payloads: [`admin`, `administrator`, `root`, `test`, `guest`, `admin123`, `password`, `P@ssw0rd`, `admin' --`, `' OR '1'='1' --`, `' OR 1=1--`, `admin'/*`, `") OR ("1"="1`] },
+  { label: 'Fuzz',    color: '#fbbf24', payloads: [`../`, `./`, `%00`, `%0a`, `%0d`, `null`, `undefined`, `true`, `false`, `0`, `-1`, `9999999`, `1e10`, `<>'"&`, `${7*7}`, `{{7*7}}`, `#{7*7}`, `%{{7*7}}`] },
+]
+
+const ERROR_PATTERNS = [
+  /sql syntax/i, /you have an error in your sql/i, /warning.*mysql/i,
+  /unclosed quotation mark/i, /microsoft sql server/i, /ora-\d{5}/i,
+  /postgresql.*error/i, /exception in thread/i, /java\.lang\./i,
+  /warning.*php/i, /fatal error/i, /parse error.*php/i,
+  /traceback \(most recent/i, /syntaxerror:/i, /stacktrace/i,
+]
+
 function useDragV(initPct, min = 20, max = 80) {
   const [pct, setPct] = useState(initPct)
   const containerRef = useRef(null)
@@ -336,7 +349,174 @@ function useDragV(initPct, min = 20, max = 80) {
   return [pct, onMouseDown, containerRef]
 }
 
-// ── Default session config ────────────────────────────────────────────────────
+function PayloadModal({ lines, setLines, payloadFile, setPayloadFile, onLoadFile, onClose }) {
+  const [newLine, setNewLine] = useState('')
+  const listEndRef = useRef(null)
+  // Ensure lines is always an array (guard against Zustand state corruption)
+  const safeLines = Array.isArray(lines) ? lines : []
+
+  const addLine = () => {
+    const trimmed = newLine.trim()
+    if (!trimmed) return
+    setLines([...safeLines, trimmed])
+    setNewLine('')
+    setTimeout(() => listEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 30)
+  }
+
+  const handlePaste = (e) => {
+    const text = e.clipboardData?.getData('text') || ''
+    const multi = text.split('\n').map(l => l.trim()).filter(Boolean)
+    if (multi.length > 1) {
+      e.preventDefault()
+      setLines([...safeLines, ...multi])
+    }
+  }
+
+  // close on Escape
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const count = payloadFile ? payloadFile.count : safeLines.length
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.55)' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{
+        width: 680, maxWidth: '95vw', height: '80vh', display: 'flex', flexDirection: 'column',
+        background: 'var(--bg-surface)', border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-lg)', boxShadow: '0 24px 64px rgba(0,0,0,0.6)', overflow: 'hidden',
+      }}>
+        {/* Header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
+          borderBottom: '1px solid var(--border-dim)', flexShrink: 0,
+        }}>
+          <Target size={14} style={{ color: 'var(--accent)' }} />
+          <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>Payload List</span>
+          <span style={{
+            fontSize: 11, padding: '2px 8px', borderRadius: 10,
+            background: 'var(--accent-glow)', border: '1px solid var(--accent-dim)', color: 'var(--accent)',
+          }}>{count.toLocaleString()} {count === 1 ? 'payload' : 'payloads'}</span>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button className="btn btn-ghost btn-sm" onClick={onLoadFile}><Upload size={11} /> Load file</button>
+            {(safeLines.length > 0 || payloadFile) && (
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
+                onClick={() => { setLines([]); setPayloadFile(null) }}>Clear all</button>
+            )}
+            <button onClick={onClose}
+              style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 4px', marginLeft: 4 }}>
+              ✕
+            </button>
+          </div>
+        </div>
+
+        {/* Preset chips */}
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: 4, padding: '8px 14px',
+          borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-base)', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', alignSelf: 'center', marginRight: 2 }}>Presets:</span>
+          {PAYLOAD_PRESETS.map(p => (
+            <button key={p.label}
+              className="btn btn-ghost btn-sm"
+              title={`Add ${p.payloads.length} ${p.label} payloads`}
+              style={{ fontSize: 10, padding: '2px 9px', color: p.color, borderColor: p.color + '44' }}
+              onClick={() => { setLines([...safeLines.filter(Boolean), ...p.payloads]); setPayloadFile(null) }}>
+              {p.label} +{p.payloads.length}
+            </button>
+          ))}
+        </div>
+
+        {/* Payload list body */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
+          {payloadFile ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0',
+              background: 'var(--accent-glow)', border: '1px solid var(--accent-dim)',
+              borderRadius: 'var(--radius)', padding: '12px 14px',
+            }}>
+              <Upload size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 12 }}>{payloadFile.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{payloadFile.count.toLocaleString()} lines — streamed during attack</div>
+              </div>
+              <button onClick={() => setPayloadFile(null)}
+                style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer' }}>
+                <X size={13} />
+              </button>
+            </div>
+          ) : (
+            <>
+              {safeLines.length === 0 && (
+                <div style={{ color: 'var(--text-dim)', fontSize: 12, textAlign: 'center', paddingTop: 32, lineHeight: 2 }}>
+                  No payloads yet.<br />
+                  Use a preset above, load a file, or type below.
+                </div>
+              )}
+              {safeLines.map((line, idx) => (
+                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', minWidth: 28, textAlign: 'right', userSelect: 'none' }}>
+                    {idx + 1}
+                  </span>
+                  <input
+                    value={line}
+                    onChange={e => setLines(safeLines.map((l, i) => i === idx ? e.target.value : l))}
+                    style={{ flex: 1, padding: '3px 8px', fontSize: 12, fontFamily: 'var(--font-mono)', minWidth: 0 }}
+                    spellCheck={false}
+                  />
+                  <button onClick={() => setLines(safeLines.filter((_, i) => i !== idx))}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 2, flexShrink: 0 }}>
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+              <div ref={listEndRef} />
+            </>
+          )}
+        </div>
+
+        {/* Add new payload */}
+        {!payloadFile && (
+          <div style={{
+            display: 'flex', gap: 6, padding: '10px 12px',
+            borderTop: '1px solid var(--border-dim)', background: 'var(--bg-base)', flexShrink: 0,
+          }}>
+            <input
+              value={newLine}
+              onChange={e => setNewLine(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addLine()}
+              onPaste={handlePaste}
+              placeholder="Add payload — Enter to confirm, paste multiple lines to bulk-add"
+              style={{ flex: 1, fontSize: 12, fontFamily: 'var(--font-mono)', padding: '5px 10px' }}
+              spellCheck={false}
+              autoFocus
+            />
+            <button className="btn btn-primary" onClick={addLine} disabled={!newLine.trim()}>
+              <Plus size={12} /> Add
+            </button>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8,
+          padding: '8px 12px', borderTop: '1px solid var(--border-dim)', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', marginRight: 'auto' }}>
+            Tip: paste multiple lines at once to bulk-import
+          </span>
+          <button className="btn btn-primary" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const defaultSessionConfig = (store) => ({
   request: store.intruderRequest || '',
   host: store.intruderHost || '',
@@ -349,7 +529,6 @@ const defaultSessionConfig = (store) => ({
   grep: store.intruderGrep || '',
 })
 
-// ── Main component ────────────────────────────────────────────────────────────
 export default function IntruderTab() {
   const {
     intruderRequest, intruderHost, intruderHttps,
@@ -360,23 +539,21 @@ export default function IntruderTab() {
     clearIntruderResults, setIntruderRunning,
     addIntruderTransform, removeIntruderTransform, updateIntruderTransform,
   } = useStore()
+  const safePayloadLines = Array.isArray(intruderPayloadLines) ? intruderPayloadLines : []
 
-  // ── Session tabs ────────────────────────────────────────────────────────────
   const sessionCounter = useRef(2)
   const [sessions, setSessions] = useState([{ id: 1, name: 'Session 1', config: null, results: [] }])
   const [activeSessionId, setActiveSessionId] = useState(1)
   const [renamingId, setRenamingId] = useState(null)
   const [renameVal, setRenameVal] = useState('')
 
-  // Save current global-store state into the specified session's config
   const snapshotCurrentConfig = () => ({
     request: intruderRequest, host: intruderHost, https: intruderHttps,
-    mode: intruderMode, payloadLines: [...intruderPayloadLines],
+    mode: intruderMode, payloadLines: [...safePayloadLines],
     transforms: [...intruderTransforms],
     concurrency: intruderConcurrency, delay: intruderDelay, grep: intruderGrep,
   })
 
-  // Load a session's config into the global store
   const loadSessionConfig = (cfg) => {
     if (!cfg) return
     setIntruderRequest(cfg.request ?? '')
@@ -392,14 +569,11 @@ export default function IntruderTab() {
 
   const switchSession = (toId) => {
     if (toId === activeSessionId) return
-    // Save current state into outgoing session
     const snapshot = snapshotCurrentConfig()
     setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, config: snapshot } : s))
-    // Load incoming session
     const toSession = sessions.find(s => s.id === toId)
     if (toSession?.config) loadSessionConfig(toSession.config)
     else {
-      // Brand new session: clear the form
       setIntruderRequest('')
       setIntruderHost('')
       setIntruderPayloadLines([])
@@ -436,7 +610,6 @@ export default function IntruderTab() {
     setSessions(prev => prev.filter(s => s.id !== id))
   }
 
-  // ── Filters, layout ─────────────────────────────────────────────────────────
   const [filterStatus, setFilterStatus] = useState('')
   const [filterSizeOp, setFilterSizeOp] = useState('any')
   const [filterSizeVal, setFilterSizeVal] = useState('')
@@ -445,7 +618,6 @@ export default function IntruderTab() {
 
   const [topPct, onTopResize, containerRef] = useDragV(55, 22, 78)
 
-  // Auto-scroll results table to show latest entry
   const resultsBodyRef = useRef(null)
   useEffect(() => {
     if (resultsBodyRef.current && intruderRunning) {
@@ -457,8 +629,8 @@ export default function IntruderTab() {
   const { taRef: reqTaRef, onContextMenu: reqCtxMenu, MenuEl: ReqMenuEl } =
     useEncoderMenu(() => intruderRequest, setIntruderRequest)
 
-  // Large-file payload mode — stores file path + count instead of content
   const [payloadFile, setPayloadFile] = useState(null) // { path, name, count } | null
+  const [showPayloadModal, setShowPayloadModal] = useState(false)
 
   const addMarkers = () => {
     const ta = reqTaRef.current
@@ -473,11 +645,9 @@ export default function IntruderTab() {
     const result = await backend.openPayloadFile()
     if (!result) return
     if (result.lines && result.lines.length > 0) {
-      // Small file — inline editing
       setIntruderPayloadLines(result.lines)
       setPayloadFile(null)
     } else {
-      // Large file — path mode; Go streams it during attack
       setPayloadFile({ path: result.path, name: result.name, count: result.count })
       setIntruderPayloadLines([])
     }
@@ -498,10 +668,10 @@ export default function IntruderTab() {
     setSelectedResult(null)
   }
 
-  const handleAddLine  = () => setIntruderPayloadLines([...intruderPayloadLines, ''])
-  const handleDelLine  = (idx) => setIntruderPayloadLines(intruderPayloadLines.filter((_, i) => i !== idx))
+  const handleAddLine  = () => setIntruderPayloadLines([...safePayloadLines, ''])
+  const handleDelLine  = (idx) => setIntruderPayloadLines(safePayloadLines.filter((_, i) => i !== idx))
   const handleEditLine = (idx, val) => {
-    const next = [...intruderPayloadLines]; next[idx] = val; setIntruderPayloadLines(next)
+    const next = [...safePayloadLines]; next[idx] = val; setIntruderPayloadLines(next)
   }
 
   const handleStart = async () => {
@@ -509,7 +679,7 @@ export default function IntruderTab() {
     clearIntruderResults()
     setSelectedResult(null)
     setIntruderRunning(true)
-    const payloadLines = intruderPayloadLines.filter(Boolean)
+    const payloadLines = safePayloadLines.filter(Boolean)
     const grepList = intruderGrep.split('\n').map(l => l.trim()).filter(Boolean)
     await backend.startIntruder({
       rawRequest: intruderRequest,
@@ -526,6 +696,37 @@ export default function IntruderTab() {
   }
 
   const handleStop = () => { backend.stopIntruder(); setIntruderRunning(false) }
+
+  const baselineLength = intruderResults[0]?.length ?? null
+
+  const errorSet = useMemo(() => {
+    const s = new Set()
+    intruderResults.forEach(r => {
+      const body = r.responseRaw || ''
+      if (ERROR_PATTERNS.some(re => re.test(body))) s.add(r.index)
+    })
+    return s
+  }, [intruderResults])
+
+  const exportCSV = () => {
+    const headers = ['#', 'Payload', 'Status', 'Length', 'Delta', 'Time(ms)', 'Grep Matched', 'Error Pattern', 'Error']
+    const rows = intruderResults.map(r => [
+      r.index,
+      `"${(r.payload || '').replace(/"/g, '""')}"`,
+      r.statusCode || '',
+      r.length || '',
+      baselineLength !== null && r.length > 0 ? r.length - baselineLength : '',
+      r.durationMs || '',
+      `"${(r.matched || []).join('; ').replace(/"/g, '""')}"`,
+      errorSet.has(r.index) ? 'YES' : '',
+      `"${(r.error || '').replace(/"/g, '""')}"`,
+    ])
+    const csv = [headers, ...rows].map(row => row.join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'intruder-results.csv' })
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
 
   const filtered = intruderResults.filter(r => {
     if (filterMatchOnly && !r.matched?.length) return false
@@ -550,7 +751,6 @@ export default function IntruderTab() {
     <>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
-      {/* ── SESSION TAB STRIP ── */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 2, padding: '5px 10px',
         borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-surface)', flexShrink: 0, overflowX: 'auto',
@@ -590,7 +790,6 @@ export default function IntruderTab() {
       </div>
 
       <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-        {/* ── CONFIG PANEL ── */}
         <div className="intruder-config" style={{ height: `${topPct}%` }}>
           {/* Target + mode row */}
           <div className="intruder-config-row">
@@ -649,52 +848,57 @@ export default function IntruderTab() {
 
             {/* Right panel: payloads + transforms + settings */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <label>Payloads {payloadFile ? '' : `(${intruderPayloadLines.filter(Boolean).length})`}</label>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <button className="btn btn-ghost btn-sm" onClick={handleLoadFile}><Upload size={11} /> Load File</button>
-                  {!payloadFile && <button className="btn btn-ghost btn-sm" onClick={handleAddLine}><Plus size={11} /></button>}
-                </div>
-              </div>
-
-              {/* Large-file mode banner */}
-              {payloadFile ? (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  background: 'rgba(124,106,247,0.1)', border: '1px solid var(--accent-dim)',
-                  borderRadius: 'var(--radius-sm)', padding: '8px 10px', fontSize: 11,
-                }}>
-                  <Upload size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {payloadFile.name}
-                    </div>
-                    <div style={{ color: 'var(--text-dim)' }}>
-                      {payloadFile.count.toLocaleString()} lines — streamed during attack
-                    </div>
+              {/* Payload summary + open modal */}
+              <div style={{
+                display: 'flex', flexDirection: 'column', gap: 6,
+                background: 'var(--bg-base)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)', padding: '10px 12px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <label>Payloads</label>
+                    {(payloadFile || safePayloadLines.length > 0) && (
+                      <span style={{
+                        marginLeft: 8, fontSize: 11,
+                        color: 'var(--accent)', fontFamily: 'var(--font-mono)',
+                      }}>
+                        {payloadFile
+                          ? `${payloadFile.count.toLocaleString()} (file)`
+                          : safePayloadLines.filter(Boolean).length
+                        }
+                      </span>
+                    )}
                   </div>
-                  <button onClick={() => setPayloadFile(null)}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 2 }}>
-                    <X size={11} />
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: 11, padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 5 }}
+                    onClick={() => setShowPayloadModal(true)}
+                  >
+                    <Target size={11} /> Edit Payloads
                   </button>
                 </div>
-              ) : (
-                <div className="payload-list" style={{ overflowY: 'auto', flex: 1, minHeight: 0, maxHeight: 100 }}>
-                  {intruderPayloadLines.length === 0 && (
-                    <div style={{ color: 'var(--text-dim)', fontSize: 11, padding: '4px 0' }}>No payloads — load a file or add lines</div>
-                  )}
-                  {intruderPayloadLines.map((line, idx) => (
-                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-                      <input value={line} onChange={e => handleEditLine(idx, e.target.value)}
-                        style={{ flex: 1, padding: '2px 6px', fontSize: 11, minWidth: 0 }} spellCheck={false} />
-                      <button onClick={() => handleDelLine(idx)}
-                        style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 2 }}>
-                        <X size={10} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+
+                {/* Compact preview */}
+                {payloadFile ? (
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Upload size={11} style={{ color: 'var(--accent)' }} />
+                    {payloadFile.name} — {payloadFile.count.toLocaleString()} lines
+                  </div>
+                ) : safePayloadLines.length > 0 ? (
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                    {safePayloadLines.slice(0, 4).map((l, i) => (
+                      <div key={i} style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l}</div>
+                    ))}
+                    {safePayloadLines.length > 4 && (
+                      <div style={{ color: 'var(--text-dim)', marginTop: 2 }}>…and {safePayloadLines.length - 4} more</div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    No payloads — click Edit Payloads to add
+                  </div>
+                )}
+              </div>
 
               {/* Transforms */}
               <div>
@@ -741,11 +945,11 @@ export default function IntruderTab() {
                 </div>
               </div>
               <div>
-                <label style={{ fontSize: 11, display: 'block', marginBottom: 3 }}>Grep strings (one per line)</label>
+                <label style={{ fontSize: 11, display: 'block', marginBottom: 3 }}>Grep strings (one per line — matched against response body)</label>
                 <textarea value={intruderGrep} onChange={e => setIntruderGrep(e.target.value)}
-                  placeholder={'success\nerror\nadmin'} spellCheck={false}
+                  placeholder={'success\nerror\nadmin\npassword\nInvalid\nWelcome'} spellCheck={false}
                   style={{
-                    width: '100%', minHeight: 40,
+                    width: '100%', minHeight: 90, maxHeight: 160,
                     background: 'var(--bg-base)', border: '1px solid var(--border)',
                     borderRadius: 'var(--radius-sm)', padding: 6,
                     fontFamily: 'var(--font-mono)', fontSize: 11, resize: 'vertical', outline: 'none',
@@ -758,7 +962,6 @@ export default function IntruderTab() {
         {/* Vertical resize handle */}
         <div className="resize-handle-v" onMouseDown={onTopResize} />
 
-        {/* ── RESULTS PANEL ── */}
         <div className="intruder-results" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* Filter bar */}
@@ -791,9 +994,14 @@ export default function IntruderTab() {
               <input type="checkbox" checked={filterMatchOnly} onChange={e => setFilterMatchOnly(e.target.checked)} />
               Matches only
             </label>
-            <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)' }}>
+            <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 8 }}>
               {filtered.length} / {intruderResults.length} results
-              {intruderRunning && <span style={{ marginLeft: 6, color: 'var(--accent)' }}>● running</span>}
+              {intruderRunning && <span style={{ color: 'var(--accent)' }}>● running</span>}
+              {intruderResults.length > 0 && (
+                <button className="btn btn-ghost btn-sm" onClick={exportCSV} title="Export results as CSV" style={{ fontSize: 10, display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <Download size={10} /> CSV
+                </button>
+              )}
             </span>
           </div>
 
@@ -809,36 +1017,37 @@ export default function IntruderTab() {
               <table className="results-table">
                 <thead>
                   <tr>
-                    <th>#</th><th>Payload</th><th>Status</th><th>Length</th><th>Time</th><th>Matched</th><th>Error</th>
+                    <th>#</th><th>Payload</th><th>Status</th><th>Length</th><th title="Delta from first response">Δ</th><th>Time</th><th>Grep</th><th title="SQL/PHP/Java error patterns detected">Err?</th>
                   </tr>
                 </thead>
                 <tbody ref={resultsBodyRef}>
-                  {filtered.map((r, i) => (
-                    <tr
-                      key={i}
-                      onClick={() => setSelectedResult(r)}
-                      style={{
-                        background: r.matched?.length ? 'rgba(124,106,247,0.06)' : undefined,
-                        cursor: 'pointer',
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
-                      onMouseLeave={e => e.currentTarget.style.background = r.matched?.length ? 'rgba(124,106,247,0.06)' : ''}
-                    >
-                      <td style={{ color: 'var(--text-dim)' }}>{r.index}</td>
-                      <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.payload}</td>
-                      <td>
-                        {r.statusCode ? <span className={`status ${statusClass(r.statusCode)}`}>{r.statusCode}</span> : '—'}
-                      </td>
-                      <td>{r.length > 0 ? r.length : '—'}</td>
-                      <td>{r.durationMs}ms</td>
-                      <td>
-                        {r.matched?.length
-                          ? <span style={{ color: 'var(--accent)', fontWeight: 500 }}>{r.matched.join(', ')}</span>
-                          : ''}
-                      </td>
-                      <td style={{ color: 'var(--red)', fontSize: 10 }}>{r.error || ''}</td>
-                    </tr>
-                  ))}
+                  {filtered.map((r, i) => {
+                    const delta = baselineLength !== null && r.length > 0 ? r.length - baselineLength : null
+                    const hasErr = errorSet.has(r.index)
+                    const rowBg = r.matched?.length ? 'rgba(124,106,247,0.06)' : hasErr ? 'rgba(248,113,113,0.04)' : undefined
+                    const deltaColor = delta === null ? 'var(--text-dim)' : Math.abs(delta) > 200 ? 'var(--red)' : Math.abs(delta) > 50 ? '#fb923c' : 'var(--text-dim)'
+                    const timeColor = r.durationMs > 5000 ? 'var(--red)' : r.durationMs > 2000 ? '#fb923c' : r.durationMs > 1000 ? '#fbbf24' : undefined
+                    return (
+                      <tr key={i} onClick={() => setSelectedResult(r)}
+                        style={{ background: rowBg, cursor: 'pointer' }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                        onMouseLeave={e => e.currentTarget.style.background = rowBg || ''}>
+                        <td style={{ color: 'var(--text-dim)' }}>{r.index}</td>
+                        <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.payload}</td>
+                        <td>{r.statusCode ? <span className={`status ${statusClass(r.statusCode)}`}>{r.statusCode}</span> : '—'}</td>
+                        <td>{r.length > 0 ? r.length : '—'}</td>
+                        <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: deltaColor }}>
+                          {delta !== null ? (delta > 0 ? '+' : '') + delta : '—'}
+                        </td>
+                        <td style={{ color: timeColor }}>{r.durationMs}ms</td>
+                        <td>{r.matched?.length ? <span style={{ color: 'var(--accent)', fontWeight: 500 }}>{r.matched.join(', ')}</span> : ''}</td>
+                        <td style={{ fontSize: 11 }}>
+                          {hasErr && <span style={{ color: 'var(--red)' }} title="Error pattern found in response body">⚠</span>}
+                          {r.error && <span style={{ color: 'var(--red)', fontSize: 10, marginLeft: hasErr ? 3 : 0 }}>{r.error.substring(0, 22)}</span>}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             )}
@@ -850,6 +1059,18 @@ export default function IntruderTab() {
     {/* Response popup modal */}
     {selectedResult && (
       <ResponseModal result={selectedResult} onClose={() => setSelectedResult(null)} />
+    )}
+
+    {/* Payload pop-out modal */}
+    {showPayloadModal && (
+      <PayloadModal
+        lines={safePayloadLines}
+        setLines={setIntruderPayloadLines}
+        payloadFile={payloadFile}
+        setPayloadFile={setPayloadFile}
+        onLoadFile={handleLoadFile}
+        onClose={() => setShowPayloadModal(false)}
+      />
     )}
 
     {ReqMenuEl}

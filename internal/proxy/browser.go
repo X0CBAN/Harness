@@ -55,7 +55,7 @@ func (a *App) LaunchBrowser() (string, error) {
 		// Suppress the "Managed by organization" / controlled profile infobars
 		"--disable-infobars",
 		"--disable-features=TranslateUI,OptimizationGuideModelDownloading,MediaRouter,DialMediaRouteProvider,OptimizationHints,ChromeWhatsNewUI",
-		"http://localhost:9090",
+		"about:blank",
 	}
 
 	cmd := exec.Command(binary, args...)

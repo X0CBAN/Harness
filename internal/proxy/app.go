@@ -29,6 +29,7 @@ import (
 	"github.com/harness-proxy/harness/internal/repeater"
 	sqlmapPkg "github.com/harness-proxy/harness/internal/sqlmap"
 	"github.com/harness-proxy/harness/internal/tokens"
+	"github.com/harness-proxy/harness/internal/fingerprint"
 )
 
 type requestMeta struct {
@@ -1262,4 +1263,10 @@ func (a *App) LoadPayloadFile() ([]string, error) {
 		return nil, err
 	}
 	return res.Lines, nil
+}
+
+// FingerprintTarget performs active tech-stack fingerprinting against the given URL.
+func (a *App) FingerprintTarget(targetURL string) (*fingerprint.Profile, error) {
+	profile := fingerprint.Run(targetURL)
+	return profile, nil
 }

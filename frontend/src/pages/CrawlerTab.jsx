@@ -1,8 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
-import { Network, Play, Square, Trash2, List, GitBranch, Upload, ChevronDown } from 'lucide-react'
+import { Network, Play, Square, Trash2, List, GitBranch, Upload, ChevronDown, Zap, Cpu } from 'lucide-react'
 import { useStore } from '../stores/store'
 import { backend } from '../bridge'
+
+// Map detected tech strings to relevant nuclei tags
+function techToNucleiTags(techList) {
+  const tags = new Set(['exposure', 'misconfig'])
+  techList.forEach(t => {
+    const tl = t.toLowerCase()
+    if (tl.includes('wordpress') || tl.includes('wp-')) tags.add('wordpress')
+    if (tl.includes('php')) tags.add('php')
+    if (tl.includes('apache')) tags.add('apache')
+    if (tl.includes('nginx')) tags.add('nginx')
+    if (tl.includes('asp.net') || tl.includes('iis')) { tags.add('aspx'); tags.add('iis') }
+    if (tl.includes('drupal')) tags.add('drupal')
+    if (tl.includes('joomla')) tags.add('joomla')
+    if (tl.includes('laravel')) tags.add('laravel')
+    if (tl.includes('django')) tags.add('django')
+    if (tl.includes('flask')) tags.add('flask')
+    if (tl.includes('java') || tl.includes('tomcat') || tl.includes('spring')) { tags.add('java'); tags.add('tomcat') }
+    if (tl.includes('express') || tl.includes('node')) tags.add('node')
+    if (tl.includes('ruby') || tl.includes('rails')) tags.add('rails')
+    if (tl.includes('jquery')) tags.add('jquery')
+    if (tl.includes('jenkins')) tags.add('jenkins')
+    if (tl.includes('grafana')) tags.add('grafana')
+    if (tl.includes('elastic')) tags.add('elasticsearch')
+  })
+  return [...tags].join(',')
+}
 
 function nodeToRequest(nodeUrl) {
   try {
@@ -26,7 +52,7 @@ function statusColor(code) {
 }
 
 export default function CrawlerTab() {
-  const { crawlNodes, addCrawlNode, clearCrawlNodesStore, crawlRunning, setCrawlRunning } = useStore()
+  const { crawlNodes, addCrawlNode, clearCrawlNodesStore, crawlRunning, setCrawlRunning, setNucleiTarget, setNucleiTags, setActiveTab } = useStore()
   const [seedURL, setSeedURL] = useState('')
   const [maxDepth, setMaxDepth] = useState(3)
   const [selected, setSelected] = useState(null)
@@ -36,6 +62,9 @@ export default function CrawlerTab() {
   const svgRef = useRef(null)
   const listRef = useRef(null)
   const prevRunning = useRef(false)
+  const [fpProfile, setFpProfile] = useState(null)
+  const [fpLoading, setFpLoading] = useState(false)
+  const [fpError, setFpError] = useState('')
 
   useEffect(() => {
     backend.getCrawlNodes().then(nodes => {
@@ -62,82 +91,133 @@ export default function CrawlerTab() {
 
   const buildGraph = useCallback(() => {
     if (!svgRef.current) return
-    const nodes = useStore.getState().crawlNodes
-    if (nodes.length === 0) return
+    const rawNodes = useStore.getState().crawlNodes
+    if (rawNodes.length === 0) return
 
     const container = svgRef.current.parentElement
-    const W = container.clientWidth || 800
-    const H = container.clientHeight || 500
+    const W = container.clientWidth || 900
+    const H = container.clientHeight || 600
 
     const svg = d3.select(svgRef.current)
     svg.attr('width', W).attr('height', H)
     svg.selectAll('*').remove()
 
-    const g = svg.append('g')
-    svg.call(d3.zoom().scaleExtent([0.1, 4]).on('zoom', (e) => {
-      g.attr('transform', e.transform)
-    }))
+    const normParam = v => /^\d+$/.test(v) || /^[0-9a-f-]{36}$/i.test(v) ? '{n}' : v
+    const canonUrl = url => {
+      try {
+        const u = new URL(url)
+        const entries = [...new URLSearchParams(u.search)]
+        if (!entries.length) return u.origin + u.pathname
+        return u.origin + u.pathname + '?' + entries.map(([k,v]) => `${k}=${normParam(v)}`).join('&')
+      } catch { return url }
+    }
+    const deduped = new Map()
+    rawNodes.forEach(n => {
+      const c = canonUrl(n.url)
+      if (!deduped.has(c)) deduped.set(c, { ...n, count: 1 })
+      else deduped.get(c).count++
+    })
+    const nodes = [...deduped.values()]
 
-    const nodeMap = new Map(nodes.map(n => [n.id, { ...n }]))
-    const simNodes = [...nodeMap.values()]
-    const links = simNodes
-      .filter(n => n.parentId != null)
-      .map(n => ({ source: n.parentId, target: n.id }))
-      .filter(l => nodeMap.has(l.source))
+    const mkNode = (name) => ({ name, children: new Map(), meta: null })
+    const root = mkNode('/')
+    root.isRoot = true
 
-    const simulation = d3.forceSimulation(simNodes)
-      .force('link', d3.forceLink(links).id(d => d.id).distance(80))
-      .force('charge', d3.forceManyBody().strength(-200))
-      .force('center', d3.forceCenter(W / 2, H / 2))
-      .force('collision', d3.forceCollide(24))
+    for (const n of nodes) {
+      try {
+        const u = new URL(n.url)
+        const segs = u.pathname.split('/').filter(Boolean)
+        const qs = u.search
 
-    const link = g.append('g')
-      .selectAll('line').data(links).join('line')
-      .attr('stroke', '#2a2a35').attr('stroke-width', 1.5)
+        let cur = root
+        for (const seg of segs) {
+          if (!cur.children.has(seg)) cur.children.set(seg, mkNode(seg))
+          cur = cur.children.get(seg)
+        }
+        if (qs) {
+          const qKey = qs
+          if (!cur.children.has(qKey)) cur.children.set(qKey, { ...mkNode(qs), isParam: true })
+          cur.children.get(qKey).meta = n
+        } else {
+          if (!cur.meta) cur.meta = n
+        }
+      } catch { /* skip invalid URLs */ }
+    }
 
-    const node = g.append('g')
-      .selectAll('g').data(simNodes).join('g')
-      .attr('cursor', 'pointer')
-      .on('click', (e, d) => { e.stopPropagation(); setSelected(d) })
-      .call(d3.drag()
-        .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y })
-        .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y })
-        .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null })
-      )
+    const toD3 = (node) => {
+      const obj = { name: node.name, meta: node.meta, isRoot: node.isRoot, isParam: node.isParam }
+      const kids = [...node.children.values()].map(toD3)
+      if (kids.length) obj.children = kids
+      return obj
+    }
+    const hierarchy = d3.hierarchy(toD3(root))
 
-    node.append('circle')
-      .attr('r', 10)
-      .attr('fill', d => statusColor(d.statusCode))
-      .attr('fill-opacity', 0.85)
-      .attr('stroke', '#0d0d0f')
-      .attr('stroke-width', 2)
+    const treeLayout = d3.tree().nodeSize([22, 200])
+    treeLayout(hierarchy)
 
-    node.append('text')
-      .attr('dy', 22).attr('text-anchor', 'middle')
-      .attr('font-size', 9).attr('fill', '#8888a0')
+    const allX = hierarchy.descendants().map(d => d.x)
+    const minX = Math.min(...allX), maxX = Math.max(...allX)
+    const offsetY = H / 2 - (minX + maxX) / 2
+
+    const cv = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    const colBorder      = cv('--border')
+    const colTextPrimary = cv('--text-primary')
+    const colTextDim     = cv('--text-dim')
+    const colBgBase      = cv('--bg-base')
+    const colAccent      = cv('--accent')
+    const colBgRaised    = cv('--bg-raised')
+    const colYellow      = cv('--yellow') || '#facc15'
+
+    const g = svg.append('g').attr('transform', `translate(80,${offsetY})`)
+    svg.call(d3.zoom().scaleExtent([0.08, 4]).on('zoom', e => g.attr('transform', e.transform)))
+
+    g.append('g').selectAll('path')
+      .data(hierarchy.links())
+      .join('path')
+      .attr('fill', 'none')
+      .attr('stroke', colBorder)
+      .attr('stroke-width', 1.2)
+      .attr('d', d3.linkHorizontal().x(d => d.y).y(d => d.x))
+
+    const nodeG = g.append('g').selectAll('g')
+      .data(hierarchy.descendants())
+      .join('g')
+      .attr('transform', d => `translate(${d.y},${d.x})`)
+      .attr('cursor', d => d.data.meta ? 'pointer' : 'default')
+      .on('click', (e, d) => { e.stopPropagation(); if (d.data.meta) setSelected(d.data.meta) })
+
+    nodeG.append('circle')
+      .attr('r', d => d.data.isRoot ? 8 : d.data.isParam ? 4 : 6)
+      .attr('fill', d => d.data.meta ? statusColor(d.data.meta.statusCode) : (d.data.isRoot ? colAccent : colBgRaised))
+      .attr('fill-opacity', 0.9)
+      .attr('stroke', colBgBase).attr('stroke-width', 1.5)
+
+    nodeG.filter(d => d.data.meta?.count > 1)
+      .append('text')
+      .attr('dx', 0).attr('dy', -10)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 8).attr('fill', colYellow).attr('font-weight', '700')
+      .text(d => `×${d.data.meta.count}`)
+
+    nodeG.append('text')
+      .attr('dx', d => (d.children ? -9 : 9))
+      .attr('dy', 4)
+      .attr('text-anchor', d => (d.children ? 'end' : 'start'))
+      .attr('font-size', 9)
+      .attr('fill', d => d.data.meta ? colTextPrimary : colTextDim)
       .text(d => {
-        try {
-          const u = new URL(d.url)
-          const p = u.pathname.length > 22 ? u.pathname.slice(0, 20) + '…' : u.pathname
-          return p || '/'
-        } catch { return d.url.slice(0, 20) }
+        const name = d.data.name || '/'
+        return name.length > 28 ? name.slice(0, 26) + '…' : name
       })
 
-    simulation.on('tick', () => {
-      link
-        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
-      node.attr('transform', d => `translate(${d.x},${d.y})`)
-    })
-
     svg.on('click', () => setSelected(null))
-  }, []) // ← intentionally no deps; pulls fresh nodes from store at call time
+  }, [])
 
   useEffect(() => {
     if (viewMode !== 'graph') return
-    const t = setTimeout(buildGraph, 100) // let DOM settle before measuring dimensions
+    const t = setTimeout(buildGraph, 100) // let DOM settle before measuring
     return () => clearTimeout(t)
-  }, [viewMode]) // ← does NOT depend on crawlNodes; fires only on tab switch
+  }, [viewMode])
 
   useEffect(() => {
     if (!crawlRunning && prevRunning.current) {
@@ -189,7 +269,33 @@ export default function CrawlerTab() {
     if (svgRef.current) d3.select(svgRef.current).selectAll('*').remove()
   }
 
-  // Right-click context menu for list rows
+  const detectedTech = useMemo(() => {
+    const seen = new Set()
+    crawlNodes.forEach(n => (n.tech || []).forEach(t => seen.add(t)))
+    return [...seen]
+  }, [crawlNodes])
+
+  const handleFingerprint = async () => {
+    const target = seedURL.trim() || (crawlNodes[0] ? (() => { try { const u = new URL(crawlNodes[0].url); return u.origin } catch { return '' } })() : '')
+    if (!target) return
+    setFpLoading(true)
+    setFpError('')
+    try {
+      const profile = await backend.fingerprintTarget(target)
+      setFpProfile(profile)
+    } catch (e) {
+      setFpError(String(e))
+    } finally {
+      setFpLoading(false)
+    }
+  }
+
+  const handleScanWithNuclei = () => {
+    setNucleiTarget(seedURL || (crawlNodes[0] ? new URL(crawlNodes[0].url).origin : ''))
+    setNucleiTags(techToNucleiTags(detectedTech))
+    setActiveTab('nuclei')
+  }
+
   const [ctxMenu, setCtxMenu] = useState(null)
   useEffect(() => {
     const close = () => setCtxMenu(null)
@@ -256,12 +362,112 @@ export default function CrawlerTab() {
           ) : (
             <button className="btn btn-primary" onClick={handleStart}><Play size={12} /> Crawl</button>
           )}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={handleFingerprint}
+            disabled={fpLoading}
+            title="Active tech-stack fingerprinting — probes 27+ paths and inspects headers/cookies"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, color: fpProfile ? 'var(--accent)' : undefined }}
+          >
+            <Cpu size={11} /> {fpLoading ? 'Profiling…' : 'Profile Stack'}
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={handleClear}><Trash2 size={11} /></button>
         </div>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
             {crawlNodes.length} nodes{crawlRunning ? ' — crawling…' : ''}
           </span>
         </div>
+
+        {/* Tech detection banner */}
+        {!crawlRunning && detectedTech.length > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px',
+            borderTop: '1px solid var(--border-dim)', background: 'var(--bg-base)', flexWrap: 'wrap',
+          }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '.5px', flexShrink: 0 }}>
+              Tech detected
+            </span>
+            {detectedTech.map(t => (
+              <span key={t} style={{
+                fontSize: 10, padding: '2px 7px', borderRadius: 10,
+                background: 'rgba(124,106,247,0.12)', border: '1px solid var(--accent-dim)',
+                color: 'var(--accent)', fontFamily: 'var(--font-mono)',
+              }}>{t}</span>
+            ))}
+            <button
+              onClick={handleScanWithNuclei}
+              className="btn btn-primary"
+              style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '4px 12px', flexShrink: 0 }}
+              title="Pre-fill Nuclei with detected tech tags and switch to Nuclei tab"
+            >
+              <Zap size={11} /> Scan with Nuclei
+            </button>
+          </div>
+        )}
+
+        {/* Fingerprint results panel */}
+        {(fpProfile || fpError) && (
+          <div style={{
+            borderTop: '1px solid var(--border-dim)', background: 'var(--bg-base)',
+            padding: '8px 14px', maxHeight: 220, overflowY: 'auto',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <Cpu size={11} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.5px', color: 'var(--text-dim)' }}>
+                Stack Profile — {fpProfile?.target}
+              </span>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setFpProfile(null); setFpError('') }}
+                style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)' }}
+              >✕</button>
+            </div>
+            {fpError && <div style={{ color: 'var(--red)', fontSize: 11 }}>{fpError}</div>}
+            {fpProfile && fpProfile.findings.length === 0 && (
+              <div style={{ color: 'var(--text-dim)', fontSize: 11 }}>No signatures matched. Status: {fpProfile.statusCode}</div>
+            )}
+            {fpProfile && fpProfile.findings.length > 0 && (() => {
+              const catColor = { server: '#60a5fa', language: '#4ade80', framework: '#f472b6', cms: '#fb923c', database: '#a78bfa', security: '#fbbf24' }
+              const byCategory = {}
+              fpProfile.findings.forEach(f => {
+                if (!byCategory[f.category]) byCategory[f.category] = []
+                byCategory[f.category].push(f)
+              })
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {Object.entries(byCategory).map(([cat, findings]) => (
+                    <div key={cat} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.5px',
+                        color: catColor[cat] || '#888', minWidth: 64, paddingTop: 2,
+                      }}>{cat}</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {findings.map((f, i) => (
+                          <span
+                            key={i}
+                            title={f.evidence}
+                            style={{
+                              fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                              background: `${catColor[cat] || '#888'}1a`,
+                              border: `1px solid ${catColor[cat] || '#888'}44`,
+                              color: catColor[cat] || '#888',
+                              fontFamily: 'var(--font-mono)',
+                              opacity: f.confidence === 'low' ? 0.6 : 1,
+                              cursor: 'help',
+                            }}
+                          >
+                            {f.tech}
+                            {f.confidence === 'low' && <span style={{ fontSize: 8, marginLeft: 3, opacity: 0.7 }}>?</span>}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
+          </div>
+        )}
 
         {/* Wordlist panel */}
         {showWordlist && (
@@ -293,7 +499,6 @@ export default function CrawlerTab() {
       {/* Main area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-        {/* ── LIST VIEW ── */}
         {viewMode === 'list' && (
           <div ref={listRef} style={{ flex: 1, overflow: 'auto', background: 'var(--bg-base)' }}>
             {crawlNodes.length === 0 ? (
@@ -351,7 +556,6 @@ export default function CrawlerTab() {
           </div>
         )}
 
-        {/* ── GRAPH VIEW ── */}
         {viewMode === 'graph' && (
           <div style={{ flex: 1, position: 'relative', overflow: 'hidden', background: 'var(--bg-base)' }}>
             {crawlNodes.length === 0 ? (
@@ -365,9 +569,10 @@ export default function CrawlerTab() {
             {crawlNodes.length > 0 && (
               <div style={{
                 position: 'absolute', bottom: 12, left: 12,
-                background: 'rgba(13,13,15,0.85)', border: '1px solid var(--border)',
+                background: 'var(--bg-surface)', border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-sm)', padding: '6px 10px',
                 display: 'flex', gap: 10, fontSize: 10, color: 'var(--text-secondary)',
+                opacity: 0.92,
               }}>
                 {[['2xx','#4ade80'], ['3xx','#60a5fa'], ['4xx','#facc15'], ['5xx','#f87171']].map(([label, color]) => (
                   <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -432,7 +637,6 @@ export default function CrawlerTab() {
         )}
       </div>
 
-      {/* Context menu — auto-flips near viewport edges */}
       {ctxMenu && (
         <div style={{
           position: 'fixed',

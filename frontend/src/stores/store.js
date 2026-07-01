@@ -190,7 +190,11 @@ export const useStore = create((set, get) => ({
   // --- Nuclei ---
   nucleiRunning: false,
   nucleiOutput: [],
+  nucleiTarget: '',
+  nucleiTags: '',
   setNucleiRunning: (v) => set({ nucleiRunning: v }),
   addNucleiOutput: (line) => set((s) => ({ nucleiOutput: [...s.nucleiOutput, line] })),
   clearNucleiOutput: () => set({ nucleiOutput: [] }),
+  setNucleiTarget: (v) => set({ nucleiTarget: v }),
+  setNucleiTags: (v) => set({ nucleiTags: v }),
 }))

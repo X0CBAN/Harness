@@ -67,6 +67,7 @@ const mockBackend = {
   stopSQLMap: async () => {},
   saveToFile: async () => {},
   startCrawlWithPaths: async () => {},
+  fingerprintTarget: async () => ({ target: '', findings: [], headers: {}, statusCode: 0 }),
   getBrowserRunning: async () => false,
   getNucleiInstalled: async () => false,
   runNuclei: async () => {},
@@ -188,6 +189,10 @@ const makeRealBackend = () => ({
   clearCrawlNodes: async () => {
     await waitForWails()
     return window.go.proxy.App.ClearCrawlNodes()
+  },
+  fingerprintTarget: async (url) => {
+    await waitForWails()
+    return window.go.proxy.App.FingerprintTarget(url)
   },
   getTokenRules: async () => {
     await waitForWails()
